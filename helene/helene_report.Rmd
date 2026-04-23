@@ -1,0 +1,517 @@
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+library(sf)
+library(ggplot2)
+library(dplyr)
+library(sp)
+library(kableExtra)
+```
+
+# Hurricane Helene Spatial Regression
+
+
+
+```{r init, echo=FALSE}
+library(viridis)
+
+#Loading in the data and prediction grid, filtering to only group 2
+load("C://Users//Shane Conroy//Downloads//helene_fit.Rdata")
+load("C://Users//Shane Conroy//Downloads//helene_pred.Rdata")
+
+hf2 <- helene_fit %>% filter(Gp == 2)
+hp2 <- helene_pred %>% filter(Gp == 2)
+
+hf2$LogPrec <- log(hf2$Prec + .1)
+
+#head(hf2)
+#head(hp2)
+```
+
+## Introduction
+
+Hurricane Helene struck the Southeastern United States in September, 2024. Storm precipitation totals were measured across the affected area. This project models storm precipitation across one subregion of Hurricane Helene’s path and uses spatial regression methods to generate predictions at unobserved locations. Such predictions can support impact assessment, including estimating potential flood risk and infrastructure damage in areas without direct measurements. The subregion (Figure 1) covers parts of the Florida panhandle, Alabama, Tennessee, Kentucky, Indiana, Georgia, and Illinois. 
+
+```{r study, fig.cap="Figure 1: Study Area", fig.align='center'}
+#Plotting study region
+ggplot(data = map_data("state"), aes(x = long, y = lat, group = group)) +
+  geom_polygon(fill = "gray60", color = "white") +
+  geom_rect(aes(xmin = -88, xmax = -84.5, ymin = 29.5, ymax = 41),
+            color = "red", fill = NA, si5ze = 0.8) +
+  coord_fixed(1.3) + labs(title = "Figure 1: Study Area for Hurricane Helene Storm Totals", x = 'Longitude', y = 'Latitude') + theme(
+plot.title = element_text(color="black", size=14, face="bold", hjust = 0.),
+panel.background=element_rect(fill = "lightblue")
+)
+```
+
+## Graphically Exploring the Data
+
+```{r, fig.show='hold', out.width='50%', fig.asp= 1}
+
+#Plotting Precipitation
+ggplot(hf2, aes(x = Lon, y = Lat)) +
+geom_polygon(data = map_data("state"), aes(x = long, y = lat, group = group),
+color = "black", fill = "white", linewidth = 0.2) +
+geom_point(shape = 21, aes(fill = Prec)) +
+scale_fill_viridis_c(name = "Precipitation", option = "D", na.value = NA)  + 
+labs(x="longitude", y="latitude",
+title="Figure 2: Storm Totals, Hurricane Helene")+
+theme(
+plot.title = element_text(color="black", size=14, face="bold", hjust = 0.5),
+panel.background=element_rect(fill = "lightblue"), plot.margin = margin(0, 0, 0, 0)
+) + scale_x_continuous(breaks = seq(-88, -84.65, by = 1)) + coord_sf(xlim = c(-88, -84.65), ylim = c(29.5, 41), expand = FALSE)
+
+#Plotting Log(Prec + .1)
+ggplot(hf2, aes(x = Lon, y = Lat)) +
+geom_polygon(data = map_data("state"), aes(x = long, y = lat, group = group),
+color = "black", fill = "white", linewidth = 0.2) +
+geom_point(shape = 21, aes(fill = LogPrec)) +
+scale_fill_viridis_c(name = "Log Precipitation + .1", option = "D", na.value = NA)  + 
+labs(x="longitude", y="latitude",
+title="Figure 3: Log-Transformed Storm Totals, Hurricane Helene")+
+theme(
+plot.title = element_text(color="black", size=14, face="bold", hjust = 0.5),
+panel.background=element_rect(fill = "lightblue"), plot.margin = margin(0, 0, 0, 0)
+) +  scale_x_continuous(breaks = seq(-88, -84.65, by = 1)) + coord_sf(xlim = c(-88, -84.65), ylim = c(29.5, 41), expand = FALSE)
+```
+ 
+If we plot the storm totals, spatial patterns emerge, suggesting possible spatial dependence. In Figure 2, higher precipitation totals appear in the Florida panhandle and more broadly across the eastern portion of the subregion.
+
+Precipitation totals are strictly positive and right-skewed, with a small number of large values driving much of the variation. We therefore apply a log transformation to reduce skewness and stabilize variance, making the data more consistent with the assumptions of the spatial regression model. A small constant is added to handle zero values.
+
+The transformed values (Figure 3) make these spatial patterns more apparent, with lower precipitation concentrated in the southwest and higher values in the southeast.
+
+
+```{r, echo=FALSE}
+library(prism)
+library(raster)
+library(sf)
+library(elevatr)
+
+options(prism.path = "C:/Users/Shane Conroy/Documents/Prism_Data")
+
+#Loading in the downloaded PRISM data
+ppt_normals <- raster("C:/Users/Shane Conroy/Documents/Prism_Data/PRISM_ppt_30yr_normal_4kmM4_09_bil/PRISM_ppt_30yr_normal_4kmM4_09_bil.bil")
+
+tmean_normals <- raster("C:/Users/Shane Conroy/Documents/Prism_Data/PRISM_tmean_30yr_normal_4kmM5_09_bil/PRISM_tmean_30yr_normal_4kmM5_09_bil.bil")
+
+#Making a shapefile of our grid so we can map the PRISM data to it
+
+grid_sp <- data.frame(Lon=hp2$Lon, Lat=hp2$Lat)
+
+grid_sf <- st_as_sf(grid_sp, coords = c("Lon", "Lat"), crs = 4326)
+
+
+#Mapping PRISM data to the shapefile
+
+#30 year average total precipitation in the month of september (mm)
+hp2$ppt <- extract(ppt_normals, grid_sf, fun = mean, na.rm = TRUE)
+
+#30 year average temperatures in the month of september (celcius)
+hp2$tmean <- extract(tmean_normals, grid_sf, fun = mean, na.rm = TRUE)
+
+#Downloading elevation data for our prediction grid
+hp2$elevation <- get_elev_point(grid_sf, src = 'aws')$elevation
+```
+
+```{r, echo=FALSE}
+#All this is basically the same as the last section, but we're downloading elevations/average september rainfall/average september temperature for the data she provided us
+
+data_points_sf <- st_as_sf(hf2, coords = c("Lon", "Lat"), crs = 4326)
+hf2$elevation <-get_elev_point(data_points_sf, src = "aws")$elevation
+hf2$ppt <- extract(ppt_normals, data_points_sf, fun = mean, na.rm = TRUE)
+hf2$tmean <- extract(tmean_normals, data_points_sf, fun = mean, na.rm = TRUE)
+
+```
+## Model Fitting
+Our regression uses the following covariates, measured at each observation:
+
+- Longitude
+- Latitude
+- 30 Year Average September Temperature
+- 30 Year Average September Precipitation (log transformed)
+- Elevation
+
+Covariate data and sources are described in the Data section. To select a model, we compare the following specifications for log-transformed
+precipitation:
+
+1. log(Precipitation) ~ Latitude + Longitude 
+2. log(Precipitation) ~ Latitude^2 + Latitude + Longitude^2 + Longitude + Avg. September Temperature
+3. log(Precipitation) ~ Latitude^2 + Latitude + Longitude^2 + Longitude + Avg. September Temperature + Elevation + log(Average September Precipitation + .1)
+4. log(Precipitation) ~ Latitude^2 + Latitude + Longitude^2 + Longitude + Avg. September Temperature + Elevation + log(Average September Precipitation + .1) + Longitude*Latitude (interaction)
+
+Polynomial terms in latitude and longitude are included to capture broad spatial trends.
+
+To compare these models, we perform 7-fold cross-validation (partitioning the data into seven groups, repeatedly fitting on six and evaluating on the seventh, then averaging the resulting errors). Model performance is assessed using root mean squared error (RMSE).
+
+```{r}
+set.seed(123)
+k <- 7
+folds <- sample(1:k, size = nrow(hf2), replace = TRUE)
+
+form1 <- LogPrec ~ Lat + Lon
+
+form2 <- LogPrec ~ poly(Lat,2,raw=TRUE) + poly(Lon,2,raw=TRUE) + tmean
+
+form3 <- LogPrec ~ poly(Lat,2,raw=TRUE) + poly(Lon,2,raw=TRUE) + 
+                  tmean + elevation + log(ppt + .1)
+
+form4 <- LogPrec ~ poly(Lat,2,raw=TRUE) + poly(Lon,2,raw=TRUE) + 
+                  tmean + elevation + log(ppt + .1) + Lat:Lon
+
+cv_rmse <- function(formula, data, folds, k){
+  rmse_vec <- rep(NA, k)
+  
+  for(i in 1:k){
+    train <- data[folds != i, ]
+    test  <- data[folds == i, ]
+    
+    fit <- lm(formula, data = train)
+    preds <- predict(fit, newdata = test)
+    
+    rmse_vec[i] <- sqrt(mean((preds - test$LogPrec)^2))
+  }
+  
+  mean(rmse_vec)
+}
+RMSE1 <- cv_rmse(form1, hf2, folds, k)
+RMSE2 <- cv_rmse(form2, hf2, folds, k)
+RMSE3 <- cv_rmse(form3, hf2, folds, k)
+RMSE4 <- cv_rmse(form4, hf2, folds, k)
+
+
+rmse_tbl <- data.frame(
+  Model = c("Model 1", "Model 2", "Model 3", "Model 4"),
+  Specification = c(
+    "Lat + Lon",
+    "Poly(Lat,2) + Poly(Lon,2) + tmean",
+    "Poly(Lat,2) + Poly(Lon,2) + tmean + elevation + log(ppt + 0.1)",
+    "Model 3 + Lat × Lon"
+  ),
+  RMSE = c(RMSE1, RMSE2, RMSE3, RMSE4)
+)
+
+knitr::kable(rmse_tbl, digits = 4) %>%
+  kable_styling(full_width = FALSE) %>%
+  kableExtra::add_header_above(c("Table 1: Model RMSE" = 3)) %>%
+  row_spec(0, extra_css = "border-bottom: 2px solid black;") %>%  # header line
+  column_spec(1, extra_css = "border-right: 2px solid black;")
+```
+Model 4 has the best RMSE value. Before proceeding, we will evaluate for multicolinearity. A covariate which exhibits high colinearity may lead to unstable estimates and poor numerical behavior, particularly when fitting more complex models. 
+
+```{r}
+library(car)
+#Regression model
+model1 <- lm(data = hf2, LogPrec ~ log(ppt + .1) + tmean + poly(Lon,2, raw=TRUE) + poly(Lat,2, raw=TRUE) +
+Lon:Lat + elevation)
+
+
+
+vif_df <- as.data.frame(vif(model1))
+knitr::kable(vif_df, digits = 3) %>%
+  kable_styling(full_width = FALSE) %>%
+  kableExtra::add_header_above(c("Table 2: Variance Inflation Factors, Model 4" = 4)) %>%
+  row_spec(0, extra_css = "border-bottom: 2px solid black;") %>%  # header line
+  column_spec(1, extra_css = "border-right: 2px solid black;")
+```
+The interaction term Latitude × Longitude exhibits a very high GVIF, indicating strong collinearity with the polynomial spatial terms. As a result, it is removed from the model. 
+
+```{r}
+model2 <- lm(data = hf2, LogPrec ~ log(ppt + .1) + tmean + poly(Lon,2, raw=TRUE) + poly(Lat,2, raw=TRUE) + elevation)
+
+coef_df <- as.data.frame(summary(model2)$coefficients)
+colnames(coef_df) <- c("Estimate", "Std. Error", "t value", "Pr(>t)")
+coef_df <- coef_df[, c("Estimate", "Std. Error", "Pr(>t)")]
+knitr::kable(coef_df, digits = 4) %>%
+  kable_styling(full_width = FALSE) %>%
+  kableExtra::add_header_above(c("Table 3: Regression coefficients for Model 3" = 4)) %>%
+  row_spec(0, extra_css = "border-bottom: 2px solid black;") %>%  # header line
+  column_spec(1, extra_css = "border-right: 2px solid black;")
+
+vif_df <- as.data.frame(vif(model2))
+knitr::kable(vif_df, digits = 3 ) %>%
+  kable_styling(full_width = FALSE) %>%
+  kableExtra::add_header_above(c("Table 4: Variance Inflation Factors for Model 3" = 4)) %>%
+  row_spec(0, extra_css = "border-bottom: 2px solid black;") %>%  # header line
+  column_spec(1, extra_css = "border-right: 2px solid black;")
+```
+If we remove the term and check GVIF numbers for Model 3, no other terms have such an extreme GVIF. Although there is still evidence of colinearity, we do not need to interpret coefficients directly for inference, as the model is primarily used for prediction. It was important to remove the interaction term as the high colinearity caused problems with fitting a universal kriging.
+
+Therefore, moving forward, we will use the following regression model:
+\[
+\log(\text{Prec} + 0.1) =
+282.3 + 0.6062\log(\text{ppt} + 0.1) + 0.1678\,\text{tmean}
++ 7.048\,\text{Lon} + 0.03735\,\text{Lon}^2
++ 2.122\,\text{Lat} - 0.02610\,\text{Lat}^2
+- 0.0006261\,\text{elevation}
+\]
+
+## Plotting The Predictions
+```{r, fig.show='hold', out.width='50%', fig.asp= 1}
+#Predictions to be plotted
+hp2$precip_total_pred=predict(model2, hp2)
+
+ggplot(hp2) + geom_tile(aes(x=Lon, y=Lat, fill=precip_total_pred)) +
+geom_polygon(data = map_data("state"), aes(x = long, y = lat, group = group),
+color = "gray", fill = NA, size = 0.5) +
+geom_contour(col="black", aes(x=Lon, y=Lat, z=precip_total_pred)) +
+scale_fill_viridis_c(option = "magma", 
+                       name = "predicted\nlog(precipitation total + .1)\n",
+                       na.value = NA) +
+scale_x_continuous(breaks = seq(-88, -84.65, by = 1)) + coord_sf(xlim = c(-88, -84.65), ylim = c(29.5, 41), expand = FALSE) + labs(title = 'Figure 4: Model 3 Predictions', x="longitude", y="latitude") +
+theme(
+plot.title = element_text(color="black", size=14, face="bold", hjust = 0.5),
+panel.background=element_rect(fill = "lightblue")
+)
+
+library(colorspace)
+
+#Plotting the residuals
+
+hf2$residuals <- model2$residuals
+
+ggplot(hf2, aes(x = Lon, y = Lat)) +
+geom_polygon(data = map_data("state"), aes(x = long, y = lat, group = group),
+color = "black", fill = "white", linewidth = 0.2) +
+geom_point(shape = 21, aes(fill = residuals)) +
+scale_fill_continuous_divergingx(palette = 'RdBu', mid = 0) + 
+labs(x="longitude", y="latitude",
+title="Figure 5: Model 3 Residuals") +
+theme(
+plot.title = element_text(color="black", size=14, face="bold", hjust = 0.5),
+panel.background=element_rect(fill = "lightblue")
+) + scale_x_continuous(breaks = seq(-88, -84.65, by = 1)) + coord_sf(xlim = c(-88, -84.65), ylim = c(29.5, 41), expand = FALSE)
+```
+
+To better understand the structure of our model’s error, we use it to predict the observed precipitation values from Figure 1. When we plot these predictions (Figure 4), noticeable differences from the observed data remain. These are more clearly seen in the residual plot (Figure 5). The model underestimates rainfall in the Florida panhandle and overestimates rainfall in western Alabama.
+
+The residuals exhibit clear spatial dependence, with nearby locations tending to have similar errors, indicating that spatial dependence remains unaccounted for by the regression model.
+
+## Picking a kriging model
+
+To account for this remaining spatial dependence, we apply universal kriging. This approach combines the regression mean structure with a spatial covariance model, allowing for improved prediction at unobserved locations.
+
+To model the spatial dependence, we consider several candidate covariance structures: exponential, spherical, Gaussian, and Matérn. These differ in how quickly spatial correlation decays with distance and in the smoothness they impose on the underlying process.
+
+Each model is fit and evaluated using AIC and BIC, which balance goodness of fit with model complexity. The model with the lowest AIC and BIC is selected for subsequent prediction.
+
+```{r universal, cache=TRUE}
+library(geoR)
+
+hf2_geoR <- as.geodata(
+  hf2,
+  coords.col = 1:2,
+  data.col = 5,
+  covar.col = c(1:2, 6:8)
+)
+
+set.seed(123)
+idx_sub <- sample(nrow(hf2), size = 300)
+hf2_sub <- hf2[idx_sub, ]
+
+hf2_geoR_sub <- as.geodata(
+  hf2_sub,
+  coords.col = 1:2,
+  data.col = 5,
+  covar.col = c(1:2, 6:8)
+)
+
+mean_model2 <- ~ log(ppt + 0.1) + tmean + poly(Lon, 2, raw = TRUE) +
+  poly(Lat, 2, raw = TRUE) + elevation
+
+lik.exp <- likfit(
+  hf2_geoR_sub,
+  ini.cov.pars = c(0.5, 2),
+  nugget = 0.02,
+  cov.model = "exponential",
+  lik.method = "REML",
+  trend = mean_model2,
+  fix.nug = FALSE,
+  messages = FALSE,
+  limits = pars.limits(
+    phi = c(lower = 0.5, upper = 2.5),
+    sigmasq = c(lower = 0.001, upper = 0.7)
+  ),
+  control = list(parscale = c(0.5, 2))
+)
+
+lik.sph <- likfit(
+  hf2_geoR_sub,
+  ini.cov.pars = c(0.5, 2),
+  nugget = 0.02,
+  cov.model = "spherical",
+  lik.method = "REML",
+  trend = mean_model2,
+  fix.nug = FALSE,
+  messages = FALSE,
+  control = list(parscale = c(0.5, 2))
+)
+
+lik.gau <- likfit(
+  hf2_geoR_sub,
+  ini.cov.pars = c(0.5, 2),
+  nugget = 0.02,
+  cov.model = "gaussian",
+  lik.method = "REML",
+  trend = mean_model2,
+  fix.nug = FALSE,
+  messages = FALSE,
+  control = list(parscale = c(0.5, 2))
+)
+
+lik.mat <- likfit(
+  hf2_geoR_sub,
+  ini.cov.pars = c(0.5, 2),
+  nugget = 0.02,
+  kappa = 1,
+  cov.model = "matern",
+  lik.method = "REML",
+  trend = mean_model2,
+  fix.nug = FALSE,
+  fix.kappa = FALSE,
+  messages = FALSE,
+  limits = pars.limits(phi = c(lower = 0.5, upper = 2.5)),
+  control = list(parscale = c(0.5, 2, 1.0))
+)
+
+```
+
+```{r, fig.align='center'}
+library(geoR)
+invisible(capture.output(
+  vgm <- variog(hf2_geoR, trend = mean_model2)
+))
+
+plot(vgm)
+
+lines(lik.exp, col = 1)
+lines(lik.mat, col = 2)
+lines(lik.sph, col = 3)
+lines(lik.gau, col = 4)
+title("Figure 6: Variogram Comparisson")
+legend(
+  "bottomright",
+  col = 1:4,
+  lty = 1,
+  legend = c("Exponential", "Matérn", "Spherical", "Gaussian")
+)
+
+aicbic_tbl <- data.frame(
+  Model = c("Exponential", "Spherical", "Gaussian", "Matérn"),
+  LogLik = c(lik.exp$loglik, lik.sph$loglik, lik.gau$loglik, lik.mat$loglik),
+  AIC = c(lik.exp$AIC, lik.sph$AIC, lik.gau$AIC, lik.mat$AIC),
+  BIC = c(lik.exp$BIC, lik.sph$BIC, lik.gau$BIC, lik.mat$BIC)
+)
+
+knitr::kable(
+  aicbic_tbl,
+  digits = 3,
+) %>%
+  kableExtra::add_header_above(c("Table 5: Model comparison for covariance structures" = 4)) %>%
+  kable_styling(full_width = FALSE) %>%
+  row_spec(0, extra_css = "border-bottom: 2px solid black;") %>%
+  column_spec(1, extra_css = "border-right: 2px solid black;")
+```
+
+The spherical and Matérn models have the lowest AIC and BIC values (Table 5). However, in Figure 6, the Matérn model appears to substantially overestimate both the partial sill and range, resulting in a much smoother variogram than suggested by the data.
+
+This indicates that the Matérn model is likely overfitting the spatial structure. While reducing the number of covariates improved the  Matérn fit, it led to worse AIC and BIC values across all models.
+
+Therefore, we will predict using the spherical covariance structure. The fitted spherical covariance model has a partial sill of 0.500, range of 2.508, and nugget of 0.021. The estimated range suggests spatial correlation decays beyond approximately 2.508 degrees.
+
+```{r testing_universal, cache=TRUE}
+# #set.seed(222)
+# k <- 3
+# # ten_fold_indices <- sample(1:k, size = nrow(hf2), replace = TRUE)
+# 
+# MSPE_UK <- rep(NA, k)
+# for(iter in 1:k){
+# ## temporary training and testing sets
+#   helene_train_tmp <- hf2[ten_fold_indices!=iter, ]
+#   helene_test_tmp <- hf2[ten_fold_indices==iter, ]
+#   pred_mean_model2 <- ~ log(helene_test_tmp$ppt + .1) + helene_test_tmp$tmean + poly(helene_test_tmp$Lon,2, raw=TRUE) +   poly(helene_test_tmp$Lat,2, raw=TRUE) + helene_test_tmp$elevation
+# 
+#   helene_train_tmp_geoR <- as.geodata(helene_train_tmp,
+#   coords.col = 1:2,
+#   data.col = 5, # here o8hrmax_4th_max is the response
+#   covar.col = c(1:2, 6:8)
+#   )
+#   ## computing omni-directional variogram
+#   varg.geoR.tmp <- variog(helene_train_tmp_geoR, trend = mean_model2)
+#   # Exponential covariance model
+#   lik.sph.tmp=likfit(helene_train_tmp_geoR, ini.cov.pars = c(.5,2), nugget = .02,
+#   cov.model="spherical", lik.method="REML",trend=mean_model2, fix.nug=FALSE, control = list(parscale = c(0.5, 2)))
+#   ## Universal kriging
+#   y.krig.uk=krige.conv(helene_train_tmp_geoR,
+#   locations = helene_test_tmp[, c("Lon","Lat")],
+#   krige=krige.control(type.krige="OK", trend.d = mean_model2,
+#   trend.l = pred_mean_model2, obj.m=lik.sph.tmp))
+#   MSPE_UK[iter] <- mean((y.krig.uk$predict - helene_test_tmp$LogPrec)^2) #MSPE for UK
+#   print(MSPE_UK[iter])
+#}
+```
+
+```{r}
+# plot(1:k, MSPE_UK, type='b', col='red', ylab='MSPE', ylim=c(0, .5))
+# 
+# legend("topright", lty=c(1,2,1), col=c('red'),
+# legend=c('Universal Kriging'))
+```
+
+
+```{r}
+#lik.sph$beta
+
+```
+
+
+```{r fig.show='hold', out.width='50%', fig.asp= 1}
+pred_mean_model2 <- ~ log(hp2$ppt + .1) + hp2$tmean + poly(hp2$Lon,2, raw=TRUE) + poly(hp2$Lat,2, raw=TRUE) + hp2$elevation
+# Exponential covariance model was the best
+y.krig=krige.conv(hf2_geoR, locations = hp2[,1:2],
+krige=krige.control(type.krige="ok",
+trend.d = mean_model2,
+trend.l = pred_mean_model2,
+obj.m=lik.sph))
+hp2$precip_total_pred <- y.krig$predict
+hp2$pred_err <- y.krig$krige.var
+
+hp2$exp_precip_pred <- exp(hp2$precip_total_pred)
+
+ggplot(hp2) + geom_tile(aes(x=Lon, y=Lat, fill=precip_total_pred)) +
+geom_polygon(data = map_data("state"), aes(x = long, y = lat, group = group),
+color = "gray", fill = NA, size = 0.5) +
+geom_contour(col="black", aes(x=Lon, y=Lat, z=precip_total_pred)) +
+scale_fill_viridis_c(option = "D", 
+                       name = "predicted\nlog(precipitation total + .1)\n",
+                       na.value = NA) + scale_x_continuous(breaks = seq(-88, -84.65, by = 1)) + coord_sf(xlim = c(-88, -84.65), ylim = c(29.5, 41), expand = FALSE) + labs(title = 'Figure 7: Universal Kriging Predicted Rainfall', x = 'longitude', y = 'latitude') + theme(
+plot.title = element_text( size=14, face="bold", hjust = 0.5),
+panel.background=element_rect(fill = "lightblue")
+)
+
+ggplot(hp2) + geom_tile(aes(x=Lon, y=Lat, fill=sqrt(pred_err))) +
+geom_polygon(data = map_data("state"), aes(x = long, y = lat, group = group),
+color = "gray", fill = NA, size = 0.5) +
+geom_contour(col="black", aes(x=Lon, y=Lat, z=precip_total_pred)) +
+scale_fill_viridis_c(option = "D", 
+                       name = "Standard Deviation at prediction",
+                       na.value = NA) +
+scale_x_continuous(breaks = seq(-88, -84.65, by = 1)) + coord_sf(xlim = c(-88, -84.65), ylim = c(29.5, 41), expand = FALSE)+ labs(title = 'Figure 8: Universal Kriging Prediction Error', x = 'longitude', y = 'latitude') + theme(
+plot.title = element_text(size=14, face="bold", hjust = 0.5),
+panel.background=element_rect(fill = "lightblue")
+)
+
+
+
+```
+```{r reported_df}
+report <- data.frame(Lon = hp2$Lon, Lat = hp2$Lat, Pred = hp2$precip_total_pred, Err = hp2$pred_err)
+```
+The resulting prediction surface (Figure 7) reflects the spatial trends identified earlier, with higher precipitation concentrated in the southeastern portion of the region and lower values in the southwest. Compared to the regression model alone, the kriging surface is smoother and captures localized variation more effectively.
+
+The associated prediction uncertainty (Figure 8) is lowest in regions with dense observations and increases in areas with fewer nearby data points, consistent with the structure of spatial interpolation.
+
+## Data And Code
+
+- [Download cleaned dataset (CSV)](helene/helene_data.csv)  
+- [View full analysis code (RMarkdown)](helene/helene_report.Rmd)  
+- [Browse raw data files](https://github.com/Gumbo954/Gumbo954.github.io/tree/main/helene/rawdata)
