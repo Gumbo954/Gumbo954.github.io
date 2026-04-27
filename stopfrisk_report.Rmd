@@ -1,0 +1,427 @@
+# Stop and Frisk Spatial Analysis
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE
+)
+
+library(spatstat)
+library(sf)
+library(splancs)
+library(dplyr)
+library(ggplot2)
+
+load("C:/Users/Shane Conroy/Downloads/nyc.Rdata")
+shapeNYC <- read_sf(dsn="C:/Users/Shane Conroy/Downloads/nycgeomfiles/nycgeomfiles",layer="nycgeom")
+
+```
+
+## Introduction
+The following is an analysis of 2023 stop and frisk data published by the New York Civil Liberties Union. Each observation represents a stop, and contains variables describing the subject, location, police officer, time of day, and other descriptive characteristics. 
+
+In this report, we will compare point patterns for stops in Manhattan that occurred before and after 6pm. This could reveal interesting information about how police practices in Manhattan vary between nighttime (or generally darker times of day), and daylight. Specifically, if there is a higher relative risk of being stopped in certain neighborhoods or regions at night. 
+
+All analyses were conducted within a fixed study window defined by the polygon of Manhattan. Edge effects were accounted for through the use of bounded kernel estimation and CSR simulations restricted to this region.
+
+```{r data_prep}
+nyc$AFTER_6PM <-ifelse(
+  as.numeric(gsub(":", "", nyc$STOP_FRISK_TIME)) >= 180000,
+  TRUE, FALSE
+)
+
+manhattan <- nyc %>%
+  filter(STOP_LOCATION_BORO_ME == "MANHATTAN") 
+
+# plot(shapeNYC["BoroName"])
+
+Manhattan_b=shapeNYC %>% filter(BoroName=="Manhattan")
+ManhattanPoly=st_union(Manhattan_b$geometry)
+# plot(ManhattanPoly, main = "Study Area")
+
+coords <- st_coordinates(ManhattanPoly)
+mh.poly <- coords
+
+```
+## Exploratory Analysis
+```{r plot_stops}
+ggplot() +
+  geom_sf(data = ManhattanPoly, fill = NA, color = "white", linewidth = 0.4) +
+  geom_point(data = manhattan,
+             aes(x = STOP_LOCATION_X, y = STOP_LOCATION_Y,
+                 color = AFTER_6PM, shape = AFTER_6PM),
+             size = 0.7, alpha = 0.7) +
+  scale_color_manual(values = c("FALSE" = "#1f78b4", "TRUE" = "#e31a1c"),
+                     labels = c("Before 6PM", "After 6PM")) +
+  scale_shape_manual(values = c("FALSE" = 16, "TRUE" = 17),
+                     labels = c("Before 6PM", "After 6PM")) +
+  coord_sf() +
+  theme_void() +
+  labs(title = "Figure 1: Stop-and-Frisk \nLocations in Manhattan",
+       color = "Time of Stop",
+       shape = "Time of Stop") +
+  theme(
+    plot.background  = element_rect(fill = "#1E1E1E", colour = NA),
+    panel.background = element_rect(fill = "#1E1E1E", colour = NA),
+    legend.background= element_rect(fill = "#1E1E1E", colour = NA),
+    legend.title     = element_text(colour = "white"),
+    legend.text      = element_text(colour = "white"),
+    plot.title       = element_text(colour = "white")
+  )
+
+```
+
+First, we will plot all stops in Manhattan (Figure 1). There appears to be clustering in the data, though it is hard to quantify due to the number of points. There are very few stops within Central Park, and fewer along the water. Additionally, the point pattern seems to vary based on time of day. There is a cluster in Northeast Manhattan with more stops after 6pm, and southern Manhattan has more stops before 6pm.
+
+## Assessing for complete spatial randomness: 
+
+To assess complete spatial randomness, we calculated the L-function with enveloping for both groups. The L-function measures spatial dependence across distance scales. Under complete spatial randomness (CSR), the L-function is expected to be approximately zero. Positive deviations indicate clustering (more points than expected within a given distance), while negative deviations indicate dispersion.
+
+To assess statistical significance, we construct simulation envelopes under CSR. Specifically, we simulate point patterns uniformly within the Manhattan study window, holding the number of observed points fixed, and compute the L-function for each simulation. The envelope is formed by taking the pointwise minimum and maximum across these simulations.
+
+If the observed L-function lies outside this envelope, it provides evidence against CSR. Using 199 simulations corresponds to an approximate significance level of α ≈ 0.05 for a two-sided test.
+
+```{r l_functions, fig.show='hold', out.width='50%'}
+before6 <- manhattan %>% filter(AFTER_6PM == FALSE)
+after6  <- manhattan %>% filter(AFTER_6PM == TRUE)
+
+pts.before=as.points(before6$STOP_LOCATION_X, before6$STOP_LOCATION_Y)
+pts.after = as.points(after6$STOP_LOCATION_X, after6$STOP_LOCATION_Y)
+
+h <- seq(0, 1500, 25)
+
+k_before <- khat(pts.before, mh.poly, h)
+l_before <- sqrt(k_before / pi) - h
+
+nsim <- 199
+sim_before <- matrix(NA, nsim, length(h))
+
+set.seed(123)
+for(i in 1:nsim){
+  sim_before[i, ] <- sqrt(khat(csr(mh.poly, nrow(pts.before)), mh.poly, h) / pi) - h
+}
+
+env <- apply(sim_before, 2, range, na.rm = TRUE)
+lpts <- l_before
+
+plot(h, lpts, type = "l", ylim = range(c(lpts, env)), main = 'Figure 2: L-function w/enveloping\nbefore 6pm', xlab = "Distance h (feet)", ylab = "L(h) - h")
+matlines(h, t(env), lty = 2, col = "blue")
+lines(h,lpts)
+abline(h=0,col=2)
+
+# -----------------------
+# CSR envelopes: after6
+# -----------------------
+k_after <- khat(pts.after, mh.poly, h)
+l_after <- sqrt(k_after / pi) - h
+
+sim_after <- matrix(NA, nsim, length(h))
+
+set.seed(456)
+for(i in 1:nsim){
+  sim_after[i, ] <- sqrt(khat(csr(mh.poly, nrow(pts.after)), mh.poly, h) / pi) - h
+}
+
+env2 <- apply(sim_after, 2, range, na.rm = TRUE)
+
+plot(h, l_after, type = "l", ylim = range(c(l_after, env2), na.rm = TRUE),
+     main = "Figure 3: L-function w/envelope\nafter 6PM",
+     ylab = "L(h) - h",
+     xlab = "Distance h (feet)")
+matlines(h, t(env2), lty = 2, col = "blue")
+abline(h = 0, col = 2)
+```
+
+As we can see from figures 2&3, the observed l-curve is far above the envelope simulated under CSR. Therefore, there is statistically significant evidence that the two-point processes do not exhibit complete spatial randomness. At first the magnitude of the difference seemed concerning. But it could potentially be explained by many factors which make stop and frisk far from spatially random, such as many stops happening near subway stations.
+
+# Kernel Maps
+
+To better visualize the stop density at different locations, I plotted two kernel intensity maps. One for stops before 6pm, and one for stops after 6pm. Moreover, I plotted a few neighborhood names at the appropriate locations to see if that would provide any insight into the data.
+
+Kernel intensity estimation provides a smooth estimate of the spatial density of events by placing a kernel function at each observed point and summing their contributions. This allows us to visualize underlying spatial structure that may not be apparent from raw point patterns.
+
+The bandwidth controls the degree of smoothing: larger values emphasize broader regional patterns, while smaller values capture more localized variation. A bandwidth of 2500 feet was chosen to reflect neighborhood-scale variation.
+
+```{r kernel_intensity, fig.show='hold', out.width='50%'}
+b=2500 
+lamnx=100
+lamny=100
+
+
+before_lamest=kernel2d(pts.before, mh.poly, b, lamnx, lamny, quiet = TRUE)
+
+after_lamest = kernel2d(pts.after, mh.poly, b, lamnx, lamny, quiet = TRUE)
+
+before_df <- expand.grid(
+  x = before_lamest$x,
+  y = before_lamest$y
+)
+before_df$z <-as.vector(before_lamest$z)
+
+
+lambda_hat_vec_b <- before_df$z / sum(before_df$z)
+
+after_df <- expand.grid(
+  x = after_lamest$x,
+  y = after_lamest$y
+)
+after_df$z <-as.vector(after_lamest$z)
+
+   
+annots <- data.frame(
+  name = c("Harlem","Chelsea","Midtown","SoHo","Chinatown"),
+  x    = c(1000800, 990600, 987800, 984700, 984900),
+  y    = c(232600,  211000, 215900, 203300, 197500)
+)
+
+
+
+ggplot(before_df, aes(x = x, y = y, fill = z)) +
+  geom_raster(interpolate = TRUE, na.rm = FALSE) + geom_sf(
+  data = Manhattan_b,
+  fill = NA,
+  color = "white",
+  linewidth = 0.6,
+  inherit.aes = FALSE
+) +
+  scale_fill_viridis_c(
+    option   = "viridis",
+    na.value = "transparent",
+    name     = "Intensity"
+  ) +
+  geom_text(
+    data        = annots,
+    aes(x = x, y = y, label = name),
+    inherit.aes = FALSE,     # â† prevent inheriting fill=z
+    color       = "grey80",
+    size        = 3,
+    fontface    = "bold"
+  ) +
+  coord_sf() +
+  labs(
+    title = "Figure 4: Kernel Intensity Estimate \n(Before 6PM)",
+    fill  = "Intensity"
+  ) +
+  theme_void() +                            # removes axes & grids
+  theme(
+    plot.background  = element_rect(fill = "#1E1E1E", colour = NA),  # whole canvas
+    panel.background = element_rect(fill = "#1E1E1E", colour = NA),  # panel under raster
+    legend.background= element_rect(fill = "#1E1E1E", colour = NA),
+    legend.title     = element_text(colour = "white"),
+    legend.text      = element_text(colour = "white"),
+    plot.title       = element_text(colour = "white")
+  )
+
+ggplot(after_df, aes(x = x, y = y, fill = z)) +
+  geom_raster(interpolate = TRUE, na.rm = FALSE) + geom_sf(
+  data = Manhattan_b,
+  fill = NA,
+  color = "white",
+  linewidth = 0.6,
+  inherit.aes = FALSE
+) +
+  scale_fill_viridis_c(
+    option   = "viridis",
+    na.value = "transparent",
+    name     = "Intensity"
+  ) +
+  geom_text(
+    data        = annots,
+    aes(x = x, y = y, label = name),
+    inherit.aes = FALSE,     # â† prevent inheriting fill=z
+    color       = "grey80",
+    size        = 3,
+    fontface    = "bold"
+  ) +
+  coord_sf() +
+  labs(
+    title = "Figure 5: Kernel Intensity Estimate \n(After 6PM)",
+    fill  = "Intensity"
+  ) +
+  theme_void() +                                # removes axes & grids
+  theme(
+    plot.background  = element_rect(fill = "#1E1E1E", colour = NA),  # whole canvas
+    panel.background = element_rect(fill = "#1E1E1E", colour = NA),  # panel under raster
+    legend.background= element_rect(fill = "#1E1E1E", colour = NA),
+    legend.title     = element_text(colour = "white"),
+    legend.text      = element_text(colour = "white"),
+    plot.title       = element_text(colour = "white")
+  )
+
+
+```
+
+There are visible differences between the two maps. After 6pm, the intensity is higher around Harlem and lower around southern Manhattan. Midtown has a higher intensity before 6pm (Figures 4 & 5). 
+
+```{r ny6}
+# h=seq(0,1500,25)
+# kpts=khat(pts.after,mh.poly,h) #calc K-function
+# plot(h, kpts, type="l", lwd=1.5, ylab="K")
+# points(h, pi*h^2, type='l', col='red')
+# legend("topleft", lwd=c(1.5,1),
+# col=c("black", "red"),
+# legend=c(expression(hat(K)), expression(pi*h^2)))
+# lpts=sqrt(kpts/pi)-h
+# plot(h, lpts, type="l", ylab="L")
+# abline(h=0,col=2) #add 0 line
+# 
+# ```
+
+# ```{r ny7}
+# plot(h, lpts, type = "l", ylim = range(c(lpts, env)), main = 'l-function w/enveloping\nafter 6pm')
+# matlines(h, sqrt(cbind(env2$lower,env2$upper)/pi)-h, lty = 2, col = "blue")
+# abline(h=0,col=2)
+# 
+```
+
+```{r relative_risk}
+# -----------------------
+# Log relative risk
+# -----------------------
+eps <- min(c(before_lamest$z, after_lamest$z), na.rm = TRUE) * 1e-6
+
+logrr_mat <- log((after_lamest$z + eps) / (before_lamest$z + eps)) -
+  log(nrow(after6) / nrow(before6))
+
+rr_df <- expand.grid(
+  x = before_lamest$x,
+  y = before_lamest$y
+)
+
+rr_df$logRR <- as.vector(logrr_mat)
+
+# -----------------------
+# Monte Carlo random labeling
+# -----------------------
+coords_all <- rbind(
+  before6[, c("STOP_LOCATION_X", "STOP_LOCATION_Y")],
+  after6[, c("STOP_LOCATION_X", "STOP_LOCATION_Y")]
+)
+
+nsim_rr <- 200
+sim_rr <- array(NA, dim = c(lamnx, lamny, nsim_rr))
+
+set.seed(789)
+
+for(i in 1:nsim_rr){
+  after_idx <- sample(1:nrow(coords_all), nrow(after6))
+  
+  pts_a <- as.points(coords_all[after_idx, ])
+  pts_b <- as.points(coords_all[-after_idx, ])
+  
+  z_a <- kernel2d(pts_a, mh.poly, b, lamnx, lamny, quiet = TRUE)$z
+  z_b <- kernel2d(pts_b, mh.poly, b, lamnx, lamny, quiet = TRUE)$z
+  
+  sim_rr[, , i] <- log((z_a + eps) / (z_b + eps)) -
+    log(nrow(after6) / nrow(before6))
+}
+
+lower_rr <- apply(sim_rr, c(1, 2), quantile, probs = .025, na.rm = TRUE)
+upper_rr <- apply(sim_rr, c(1, 2), quantile, probs = .975, na.rm = TRUE)
+
+rr_df$lower <- as.vector(lower_rr)
+rr_df$upper <- as.vector(upper_rr)
+
+rr_df$significance <- ifelse(
+  rr_df$logRR > rr_df$upper, 1,
+  ifelse(rr_df$logRR < rr_df$lower, -1, 0)
+)
+```
+
+# Log relative risk and significance: 
+
+```{r risk_plots, fig.show='hold', out.width='50%'}
+  sig_colors <- c("-1" = "blue", "0" = "grey80", "1" = "red")
+  
+  ggplot(rr_df, aes(x = x, y = y, fill = logRR)) +
+  geom_raster(interpolate = TRUE, na.rm = FALSE) +
+  scale_fill_gradient2(
+  low = "blue",
+  mid = "white",
+  high = "red",
+  midpoint = 0,
+  limits = c(-3, 3),
+  oob = scales::squish,
+  na.value = "transparent",
+  name = "Log Relative Risk"
+) + geom_sf(
+  data = Manhattan_b,
+  fill = NA,
+  color = "white",
+  linewidth = 0.6,
+  inherit.aes = FALSE
+) + 
+  geom_text(
+    data = annots,
+    aes(x = x, y = y, label = name),
+    inherit.aes = FALSE,
+    color = "black",
+    size = 3,
+    fontface = "bold"
+  ) +
+  coord_sf() +
+  labs(title = "Figure 6: Log Relative Risk\n(After vs Before 6PM)") +
+  theme_void() +
+  theme(
+    plot.background  = element_rect(fill = "#1E1E1E", colour = NA),
+    panel.background = element_rect(fill = "#1E1E1E", colour = NA),
+    legend.background= element_rect(fill = "#1E1E1E", colour = NA),
+    legend.title     = element_text(colour = "white"),
+    legend.text      = element_text(colour = "white"),
+    plot.title       = element_text(colour = "white")
+  )
+
+ggplot(rr_df, aes(x = x, y = y, fill = factor(significance))) +
+  geom_raster(interpolate = FALSE) + # Use interpolate=FALSE for discrete categories
+  scale_fill_manual(
+    values = sig_colors,
+    name = "Significance",
+    labels = c("Significantly Lower", "Not Significant", "Significantly Higher"),
+    na.value = "transparent",
+    na.translate = FALSE
+  ) + geom_sf(
+  data = Manhattan_b,
+  fill = NA,
+  color = "white",
+  linewidth = 0.6,
+  inherit.aes = FALSE
+) + geom_text(
+    data        = annots,
+    aes(x = x, y = y, label = name),
+    inherit.aes = FALSE,     # â† prevent inheriting fill=z
+    color       = "black",
+    size        = 3,
+    fontface    = "bold"
+  ) +
+  coord_sf() +
+  labs(title = "Figure 7: Significance of \nLog Relative Risk \n(After vs Before 6PM)") +
+  theme(legend.position = "bottom") + theme_void() +                                # removes axes & grids
+  theme(
+    plot.background  = element_rect(fill = "#1E1E1E", colour = NA),  # whole canvas
+    panel.background = element_rect(fill = "#1E1E1E", colour = NA),  # panel under raster
+    legend.background= element_rect(fill = "#1E1E1E", colour = NA),
+    legend.title     = element_text(colour = "white"),
+    legend.text      = element_text(colour = "white"),
+    plot.title       = element_text(colour = "white")
+  )
+
+```
+
+To better understand how these point processes relate to one another, we plot the log relative risk, defined as:
+
+r(s) = ln(λ₁(s) / λ₀(s)) − ln(N₁ / N₀) (Figure 6),
+
+where λ₁(s) and λ₀(s) are the estimated spatial intensities after and before 6pm, respectively, and N₁ and N₀ are the total number of stops in each group. The second term adjusts for overall differences in sample size, so that r(s) reflects relative spatial variation rather than global differences in stop frequency.
+
+Positive values indicate relatively higher stop intensity after 6pm, while negative values indicate higher intensity before 6pm. In Figure 7, we plot only values where the log-risk was higher or lower than expected by a statistically significant margin (p = .05). Statistical significance was assessed using a Monte Carlo random labeling procedure, which simulates the null hypothesis that time-of-day labels are randomly assigned.
+
+As we can see in Fiugre 7, there is a significantly higher relative risk of being stopped in Harlem and surrounding areas after 6pm, and a significantly lower relative risk of being stopped in midtown and surrounding areas. This pattern may reflect differences in policing strategies between residential and commercial areas, though underlying demographic or socioeconomic factors may also contribute. 
+
+These results should be interpreted cautiously, as observed spatial patterns may reflect both policing behavior and underlying population density or activity patterns.
+
+## Data And Code
+
+- [Download cleaned dataset (CSV)](stopfrisk/manhattan_stops.csv)  
+- [View full analysis code (RMarkdown)](stopfrisk/stopfrisk_report.Rmd)  
+- [Browse raw data files](https://github.com/Gumbo954/Gumbo954.github.io/tree/main/stopfrisk/rawdata)
